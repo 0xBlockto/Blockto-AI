@@ -1,26 +1,15 @@
 import requests
 from io import BytesIO
+from PIL import Image
 import chromadb
 from sklearn.metrics.pairwise import cosine_similarity
 from embeddings import extract_features
 import numpy as np
-from PIL import Image
+import time
 
-chroma_client = None
-collection = None
-
-
-# Initialize ChromaDB client and collection
-def appstart():
-    global chroma_client, collection
-    # chroma_client = chromadb.HttpClient(host='localhost', port='8000')
-    chroma_client = chromadb.Client()
-
-    collection = chroma_client.create_collection(name="luxora")
-
-
-appstart()
-
+# Initialize persistent client
+chroma_client = chromadb.PersistentClient(path="./storage")
+collection = chroma_client.get_or_create_collection(name="soulbase")
 
 def download_image(url):
     response = requests.get(url)
@@ -28,36 +17,49 @@ def download_image(url):
         return Image.open(BytesIO(response.content))
     else:
         return None
-
-
-def store_image_embedding_from_url(image_url):
+    
+def store_and_compare_embeddings(image_url):
     image = download_image(image_url)
     if image is None:
         raise ValueError("Could not download image from URL")
 
-    embedding = extract_features(image).tolist()
-    collection.add(
-        embeddings=[embedding],
-        documents=[image_url],
-        ids=[image_url]
+    start_time = time.time()
+
+    current_embedding = extract_features(image).tolist()
+
+    # Check if embedding already exists
+    existing = collection.get(ids=[image_url])
+    is_existing_image = bool(existing['documents'])  # Check if the image already exists
+
+    # Set success to false if image already exists in the collection
+    success = not is_existing_image
+
+    # Compare the current embedding with all existing embeddings
+    all_embeddings = collection.query(
+        query_embeddings=[current_embedding],
+        include=["documents", "embeddings"]
     )
 
-
-def compare_embedding_with_url(current_url, before_urls):
-    current_image = download_image(current_url)
-    if current_image is None:
-        raise ValueError("Could not download current image from URL")
-
-    current_embedding = extract_features(current_image).tolist()
     similarities = []
+    for i, doc_url in enumerate(all_embeddings['documents'][0]):
+        before_embedding = all_embeddings['embeddings'][0][i]
+        similarity = cosine_similarity(
+            np.array([current_embedding]).reshape(1, -1), 
+            np.array([before_embedding]).reshape(1, -1)
+        )[0][0]
 
-    for url in before_urls:
-        before_image = download_image(url)
-        if before_image is None:
-            continue
+        # Add to similarities list
+        similarities.append({"file": doc_url, "similarity": similarity})
 
-        before_embedding = extract_features(before_image).tolist()
-        similarity = cosine_similarity(np.array(current_embedding).reshape(1, -1), np.array(before_embedding).reshape(1, -1))
-        similarities.append((url, similarity[0][0]))
+        # Further check for similarity with other images
+        if doc_url != image_url and similarity >= 0.95:
+            success = False
 
-    return similarities
+    # Store the embedding only if it's a new image and success is true
+    if success and not is_existing_image:
+        collection.add(embeddings=[current_embedding], documents=[image_url], ids=[image_url])
+
+    end_time = time.time()
+    print(f"Time taken for computation: {end_time - start_time} seconds")
+
+    return {"embeddings": similarities, "success": success}

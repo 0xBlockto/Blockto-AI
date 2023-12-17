@@ -1,10 +1,12 @@
 import torch
 import torchvision.models as models
 import torchvision.transforms as transforms
+from torchvision.models import ResNet50_Weights
 from PIL import Image
 
-# Load a pre-trained ResNet50 model
-model = models.resnet50(pretrained=True)
+# Load a pre-trained ResNet50 model with the new weights parameter
+weights = ResNet50_Weights.DEFAULT
+model = models.resnet50(weights=weights)
 model.eval()
 
 # Define a transform to preprocess the image
